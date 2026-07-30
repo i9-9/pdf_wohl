@@ -16,6 +16,11 @@ const assets = [
 	{ from: "node_modules/mupdf/dist/mupdf.js", to: "public/mupdf/mupdf.js" },
 	{ from: "node_modules/mupdf/dist/mupdf-wasm.js", to: "public/mupdf/mupdf-wasm.js" },
 	{ from: "node_modules/mupdf/dist/mupdf-wasm.wasm", to: "public/mupdf/mupdf-wasm.wasm" },
+	// mozjpeg replaces the browser's JPEG encoder, which offers no control over
+	// chroma subsampling. Same deal as mupdf: the .js resolves its own .wasm
+	// relative to import.meta.url, so the pair has to stay together.
+	{ from: "node_modules/@jsquash/jpeg/codec/enc/mozjpeg_enc.js", to: "public/mozjpeg/mozjpeg_enc.js" },
+	{ from: "node_modules/@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm", to: "public/mozjpeg/mozjpeg_enc.wasm" },
 	// pdf.js only powers the before/after preview.
 	{ from: "node_modules/pdfjs-dist/build/pdf.worker.min.mjs", to: "public/pdfjs/pdf.worker.min.mjs" },
 ];

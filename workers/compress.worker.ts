@@ -7,6 +7,7 @@
  */
 
 import { CompressAbortError, compressPdf, describeError, loadEngine } from "../lib/compress";
+import { loadEncoder } from "../lib/jpeg";
 import type { WorkerIncoming, WorkerResponse } from "../lib/types";
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -16,7 +17,9 @@ function post(message: WorkerResponse, transfer?: Transferable[]): void {
 	else ctx.postMessage(message);
 }
 
-void loadEngine().then(
+// Both WASM modules are warmed up before the UI opens the dropzone, so the
+// first file does not pay for the download and instantiation of either.
+void Promise.all([loadEngine(), loadEncoder()]).then(
 	() => post({ kind: "ready" }),
 	(error: unknown) => {
 		post({

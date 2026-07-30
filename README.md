@@ -54,13 +54,17 @@ public/
     mupdf.js            # fachada JS
     mupdf-wasm.js       # glue de emscripten
     mupdf-wasm.wasm     # el motor, ~12 MB
+  mozjpeg/
+    mozjpeg_enc.js      # glue de emscripten
+    mozjpeg_enc.wasm    # el codificador JPEG, ~246 KB
   pdfjs/
     pdf.worker.min.mjs  # sólo para el comparador antes/después
 ```
 
 Los tres archivos de mupdf tienen que quedar en el **mismo directorio**:
 `mupdf.js` importa `./mupdf-wasm.js`, y ése resuelve `mupdf-wasm.wasm` contra su
-propio `import.meta.url`. Si se separan, la cadena se rompe.
+propio `import.meta.url`. Si se separan, la cadena se rompe. Lo mismo vale para
+el par de mozjpeg.
 
 El worker de compresión no importa mupdf como dependencia del bundle: lo carga en
 tiempo de ejecución desde esa ruta.
@@ -87,18 +91,35 @@ Por cada XObject de imagen, una sola vez por xref (no por página):
    la más chica destruiría la copia grande.
 2. **Reencodea sólo si `ppi > target * 1.15`**. Por debajo de ese margen la
    imagen se deja intacta; reencodear de gusto sólo degrada.
-3. **RGB → JPEG** (`/DCTDecode`) a la calidad del preset. **Grises →
-   `/FlateDecode`**, sin pérdida. CMYK, Lab, Indexed y separaciones se convierten
-   a RGB antes de reencodear.
-4. **Máscaras suaves**: si el valor mínimo del canal es `>= 250`, la máscara no
+3. **Remuestrea con promedio de área en luz lineal**. Promediar bytes con gamma
+   aplicada es la operación equivocada: un par blanco/negro da 128 cuando la
+   respuesta correcta es 188. En zonas suaves el error es despreciable, pero en
+   bordes duros y altas luces quemadas llega a dE 24. Se descartó Lanczos3:
+   contra un ideal supersampleado analíticamente mide dE 0.40 donde el promedio
+   de área mide 0.03, y sobrepasa hasta dE 40 en bordes duros, que en una foto de
+   producto se ve como un halo.
+4. **RGB → JPEG** (`/DCTDecode`) a la calidad del preset, con **croma 4:4:4**.
+   **Grises → `/FlateDecode`**, sin pérdida. CMYK, Lab, Indexed y separaciones se
+   convierten a RGB antes de reencodear.
+5. **Conserva el perfil ICC**. Una imagen `/ICCBased` se reescribe con su entrada
+   `/ColorSpace` intacta, porque mupdf la decodifica en su propio espacio y
+   reetiquetarla `/DeviceRGB` correría cada color: un rojo Adobe RGB
+   `(200,60,60)` debería mostrarse como sRGB `(231,57,57)`. Convertir a sRGB
+   tampoco sirve para este caso, porque recorta el gamut. Un `/Indexed` sobre una
+   base ICC sí se convierte: sus muestras se expanden al decodificar y la paleta
+   original ya no las describe.
+6. **Máscaras suaves**: si el valor mínimo del canal es `>= 250`, la máscara no
    hace nada y se borra junto con la referencia `/SMask` del padre. Si hace algo,
-   se remuestrea a las dimensiones exactas del padre. Esta pregunta se hace
-   también para los padres que **no** se reencodean: una máscara opaca es peso
-   muerto independientemente de la resolución de su padre.
-5. **Nunca se toca**: content streams, fuentes Type 3, vectores, anotaciones,
+   se remuestrea a las dimensiones exactas del padre, con transferencia lineal en
+   vez de sRGB: una muestra de `/SMask` es una fracción de cobertura, ya lineal,
+   y pasarla por gamma distorsionaría justo los bordes suaves que la máscara
+   existe para producir. Esta pregunta se hace también para los padres que **no**
+   se reencodean: una máscara opaca es peso muerto independientemente de la
+   resolución de su padre.
+7. **Nunca se toca**: content streams, fuentes Type 3, vectores, anotaciones,
    stencils `/ImageMask`, imágenes de 1 bit, ni imágenes que no se dibujan en
    ninguna página.
-6. **Si el resultado no ayuda, no se aplica**. La comparación es por objeto
+8. **Si el resultado no ayuda, no se aplica**. La comparación es por objeto
    (stream reencodeado contra stream original) y también global: si el archivo
    final pesa igual o más que el de entrada, se devuelve el original y se avisa
    en la interfaz.
@@ -108,7 +129,23 @@ duplicados), `compress: true` (deflate de todo lo que no reescribimos nosotros) 
 `clean: true`.
 
 Todo el trabajo ocurre en un Web Worker. Nunca hay más de una imagen decodificada
-viva: cada pixmap y cada canvas se libera antes de pasar al objeto siguiente.
+viva: cada pixmap se libera antes de pasar al objeto siguiente, y el remuestreo
+trabaja sobre dos búferes de una fila en vez de un acumulador del tamaño de la
+imagen.
+
+### Por qué mozjpeg y no el codificador del navegador
+
+`OffscreenCanvas.convertToBlob` no expone control de submuestreo de croma, y los
+navegadores submuestrean 4:2:0 a calidades normales: el color queda a la mitad de
+resolución en ambos ejes, así que una imagen bajada a 110 ppi lleva su color a 55
+ppi. En todas las mediciones el error de croma domina el error total, entre el 75
+y el 95 %, de modo que ése era el mayor costo de color del pipeline y la API de
+plataforma no lo puede tocar.
+
+mozjpeg además trae mejores tablas de cuantización, que es lo que paga la mayor
+parte del costo de 4:4:4. Su cuantización trellis, en cambio, está deliberadamente
+**apagada**: no dio ninguna mejora medible sobre este contenido y costaba entre un
+30 y un 140 % más de tiempo de codificación.
 
 ## Presets
 
@@ -145,15 +182,18 @@ original. En ese caso el objeto se deja intacto y se informa como "no convenía"
 Es el comportamiento correcto, pero significa que en documentos con muchas fotos
 en escala de grises el ahorro es menor de lo esperado.
 
-**La calidad JPEG depende del navegador.** El encoder es
-`OffscreenCanvas.convertToBlob({ type: "image/jpeg", quality })`, es decir el del
-navegador. La curva de calidad no es idéntica entre Chromium, Firefox y Safari,
-así que el mismo archivo con el mismo preset puede pesar algo distinto según
-dónde se procese.
+**El remuestreo asume la curva sRGB.** Una imagen que se conserva en Adobe RGB o
+ProPhoto RGB mantiene su perfil intacto, pero el promediado la lineariza con la
+curva de transferencia de sRGB en vez de la del perfil (gamma 2,2 y 1,8
+respectivamente). El error es de segundo orden, porque afecta sólo cómo se
+promedian los vecinos y la transformación inversa lo revierte, y es mucho menor
+que el de reetiquetar el espacio. Leer la TRC real del perfil ICC lo eliminaría.
 
-**La conversión de color no es colorimétrica.** CMYK/ICC pasan a RGB con la
-conversión de mupdf, sin gestión de perfiles ni preservación de `/OutputIntent`.
-Para pantalla es lo correcto; para un PDF destinado a imprenta, no.
+**No se preserva `/OutputIntent`.** Los perfiles de las imágenes sí se conservan,
+y las conversiones desde CMYK, Lab o Indexed sí son colorimétricas (este build de
+mupdf trae lcms: `DeviceCMYK(0,255,255,0)` da `237,28,36`, no el `255,0,0` de una
+fórmula naíf). Pero el intento de salida del documento no se toca, así que para un
+PDF destinado a imprenta hace falta revisarlo aparte.
 
 **Sin soporte para PDF cifrado.** Un archivo protegido con contraseña falla al
 abrirse y se informa como error.

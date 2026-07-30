@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@jsquash/jpeg": "^1.6.0",
     "mupdf": "1.28.0",
     "next": "16.2.12",
     "pdfjs-dist": "4.10.38",

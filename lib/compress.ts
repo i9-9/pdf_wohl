@@ -29,9 +29,24 @@
  *   backing ArrayBuffer and silently turns the view into a zero-length array.
  *   Every such view is therefore copied out before anything else runs.
  * - `Image.toPixmap()` always decodes at full resolution; mupdf exposes no
- *   scaled decode, so resampling happens afterwards on an OffscreenCanvas.
+ *   scaled decode, so resampling happens afterwards, in ./plane.
+ * - `toPixmap()` decodes into the image's *own* colour space, ICC profile and
+ *   all: an /ICCBased image comes back as an ICCBased pixmap with its values
+ *   untouched, and `ColorSpace.getType()` reports plain "RGB" for it because
+ *   mupdf's type enum has no ICC variant. Relabelling such an image
+ *   /DeviceRGB therefore reinterprets wide-gamut values as sRGB and shifts
+ *   every colour in it: an Adobe RGB (200,60,60) should display as sRGB
+ *   (231,57,57), and a ProPhoto (70,90,200) as (0,113,221). Verified against
+ *   real profiles, and the reason such images keep their /ColorSpace entry
+ *   verbatim below rather than being converted.
+ * - `convertToColorSpace` does perform a real colorimetric transform (this
+ *   build has lcms: DeviceCMYK 0,255,255,0 converts to 237,28,36, not the
+ *   255,0,0 a naive formula gives). It is still not used on wide-gamut RGB,
+ *   because converting to sRGB would clip whatever falls outside it.
  */
 
+import { encodeJpeg } from "./jpeg";
+import { firstComponent, resampleArea, toRgba, type Plane, type Transfer } from "./plane";
 import { REENCODE_MARGIN } from "./presets";
 import type {
 	CompressResult,
@@ -542,17 +557,15 @@ async function rewriteImage(
 	quality: number,
 ): Promise<WriteOutcome> {
 	const ref = doc.newIndirect(entry.xref);
-	const surface = pixmapToSurface(decodePixmap(mupdf, doc, ref));
+	const decoded = decodeImage(mupdf, doc, ref);
+	// Takes ownership of the pixmap and releases the full-size plane before the
+	// encoder allocates anything.
+	const plane = shrink(decoded.pixmap, decision.newWidth, decision.newHeight, "srgb");
 
-	let payload: Uint8Array;
-	const isGray = surface.gray;
-	try {
-		payload = isGray
-			? await deflate(await encodeGray(surface, decision.newWidth, decision.newHeight))
-			: await encodeJpeg(surface, decision.newWidth, decision.newHeight, quality);
-	} finally {
-		surface.release();
-	}
+	const isGray = plane.components === 1;
+	const payload = isGray
+		? await deflate(firstComponent(plane))
+		: await encodeJpeg(toRgba(plane), plane.width, plane.height, quality);
 
 	// A smooth gradient or flat artwork can already be smaller as Flate at full
 	// size than as anything we produce. In that case the original stays.
@@ -560,8 +573,25 @@ async function rewriteImage(
 		return { written: false, bytes: entry.streamBytes };
 	}
 
-	writeImageStream(doc, ref, payload, isGray, decision.newWidth, decision.newHeight);
+	writeImageStream(doc, ref, payload, {
+		isGray,
+		width: decision.newWidth,
+		height: decision.newHeight,
+		keepColorSpace: decoded.keepColorSpace,
+	});
 	return { written: true, bytes: payload.byteLength };
+}
+
+interface StreamShape {
+	isGray: boolean;
+	width: number;
+	height: number;
+	/**
+	 * Leaves the existing /ColorSpace entry alone. Set for images whose samples
+	 * are still in their original ICC space, where naming a device space would
+	 * be a lie about what the bytes mean.
+	 */
+	keepColorSpace: boolean;
 }
 
 /** Replaces an image XObject's stream and re-states its dictionary. */
@@ -569,16 +599,16 @@ function writeImageStream(
 	doc: MuDocument,
 	ref: MuPdfObject,
 	payload: Uint8Array,
-	isGray: boolean,
-	width: number,
-	height: number,
+	shape: StreamShape,
 ): void {
 	ref.writeRawStream(payload);
-	ref.put("Filter", doc.newName(isGray ? "FlateDecode" : "DCTDecode"));
-	ref.put("Width", width);
-	ref.put("Height", height);
+	ref.put("Filter", doc.newName(shape.isGray ? "FlateDecode" : "DCTDecode"));
+	ref.put("Width", shape.width);
+	ref.put("Height", shape.height);
 	ref.put("BitsPerComponent", 8);
-	ref.put("ColorSpace", doc.newName(isGray ? "DeviceGray" : "DeviceRGB"));
+	if (!shape.keepColorSpace) {
+		ref.put("ColorSpace", doc.newName(shape.isGray ? "DeviceGray" : "DeviceRGB"));
+	}
 	// The decoded pixmap already had these applied; keeping them would apply twice.
 	ref.delete("DecodeParms");
 	ref.delete("Decode");
@@ -600,11 +630,11 @@ async function processSoftMask(
 	targetHeight: number,
 ): Promise<MaskResult> {
 	const ref = doc.newIndirect(mask.xref);
-	const pixmap = decodePixmap(mupdf, doc, ref);
+	const pixmap = decodeImage(mupdf, doc, ref).pixmap;
 
-	// The opacity probe runs on the pixmap, before any canvas exists: for the
-	// common case of a mask that masks nothing, this avoids allocating an RGBA
-	// buffer four times the size of the image to learn the same thing.
+	// The opacity probe runs on the pixmap, while it is still the only copy: for
+	// the common case of a mask that masks nothing, this answers the question
+	// without ever allocating a plane for it.
 	let opacity: number;
 	try {
 		opacity = minChannelValue(pixmap);
@@ -624,63 +654,155 @@ async function processSoftMask(
 		return { outcome: "bilevel", bytes: mask.streamBytes };
 	}
 
-	// Takes ownership of the pixmap.
-	const surface = pixmapToSurface(pixmap);
-	let payload: Uint8Array;
-	try {
-		// Masks stay lossless: JPEG ringing on an alpha channel shows up as halos
-		// along every edge it is supposed to soften.
-		payload = await deflate(await encodeGray(surface, targetWidth, targetHeight));
-	} finally {
-		surface.release();
-	}
+	// Masks resample with a linear transfer, not sRGB: an /SMask sample is a
+	// coverage fraction, so a gamma round-trip would distort exactly the soft
+	// edges the mask exists to produce. They also stay lossless, because JPEG
+	// ringing on an alpha channel shows up as a halo along every one of them.
+	const plane = shrink(pixmap, targetWidth, targetHeight, "linear");
+	const payload = await deflate(firstComponent(plane));
 
 	if (mask.streamBytes > 0 && payload.byteLength >= mask.streamBytes) {
 		return { outcome: "grew", bytes: mask.streamBytes };
 	}
 
-	writeImageStream(doc, ref, payload, true, targetWidth, targetHeight);
+	writeImageStream(doc, ref, payload, {
+		isGray: true,
+		width: targetWidth,
+		height: targetHeight,
+		// A mask is a single linear coverage channel; /DeviceGray is what it is.
+		keepColorSpace: false,
+	});
 	return { outcome: "resampled", bytes: payload.byteLength };
 }
 
-/* -------------------------------------------------------------- surfaces ---- */
+/* ---------------------------------------------------------------- pixels ---- */
 
-/**
- * A decoded image copied out of the WASM heap and parked on an OffscreenCanvas,
- * ready to be resampled. Exactly one of these is alive at a time.
- */
-interface Surface {
-	canvas: OffscreenCanvas;
-	width: number;
-	height: number;
-	gray: boolean;
-	release: () => void;
+interface Decoded {
+	pixmap: MuPixmap;
+	/** See `StreamShape.keepColorSpace`. */
+	keepColorSpace: boolean;
 }
 
 /**
- * Decodes an image XObject to a pixmap normalised to DeviceGray or DeviceRGB.
- * The caller owns the result and must destroy it.
+ * Decodes an image XObject to a pixmap this pipeline can describe honestly in a
+ * PDF dictionary: either a device space, or the image's own ICC space with its
+ * /ColorSpace entry left in place. The caller owns the pixmap.
  */
-function decodePixmap(mupdf: MuPdf, doc: MuDocument, ref: MuPdfObject): MuPixmap {
+function decodeImage(mupdf: MuPdf, doc: MuDocument, ref: MuPdfObject): Decoded {
 	const image = doc.loadImage(ref);
 	let pixmap: MuPixmap | null = null;
 	try {
 		pixmap = image.toPixmap();
+		const components = pixmap.getNumberOfComponents();
 		const csType = pixmap.getColorSpace()?.getType() ?? "None";
-		if (csType !== "Gray" && csType !== "RGB") {
-			// CMYK, Lab, Separation, Indexed, BGR: all normalise to RGB first.
-			const converted = pixmap.convertToColorSpace(mupdf.ColorSpace.DeviceRGB, false);
-			pixmap.destroy();
-			pixmap = converted;
+
+		if (csType === "Gray" || csType === "RGB") {
+			// Either a device space, in which case naming it below is accurate and
+			// free, or an ICC space that the entry already describes exactly. The
+			// entry is what decides, not the pixmap: an /Indexed image whose base
+			// is ICCBased also decodes to an RGB pixmap, but its entry describes a
+			// palette that the expanded samples no longer match.
+			if (hasReusableIccEntry(ref, components)) {
+				const result = pixmap;
+				pixmap = null;
+				return { pixmap: result, keepColorSpace: true };
+			}
+			if (isDeviceEntry(ref)) {
+				const result = pixmap;
+				pixmap = null;
+				return { pixmap: result, keepColorSpace: false };
+			}
 		}
+
+		// Anything left over -- CMYK, Lab, Separation, Indexed, BGR, or an ICC
+		// space the dictionary cannot restate -- is converted, so that the device
+		// space written afterwards is the truth about the samples.
+		const target = components === 1 ? mupdf.ColorSpace.DeviceGray : mupdf.ColorSpace.DeviceRGB;
+		const converted = pixmap.convertToColorSpace(target, false);
+		pixmap.destroy();
+		pixmap = converted;
+
 		const result = pixmap;
 		pixmap = null;
-		return result;
+		return { pixmap: result, keepColorSpace: false };
 	} catch (error) {
 		pixmap?.destroy();
 		throw error;
 	} finally {
 		image.destroy();
+	}
+}
+
+/**
+ * True when /ColorSpace is `[/ICCBased <stream>]` describing exactly the number
+ * of components the decoded samples have, so the entry can be carried over
+ * unchanged. Keeping it is what preserves an Adobe RGB or ProPhoto photograph
+ * instead of reinterpreting it as sRGB.
+ */
+function hasReusableIccEntry(ref: MuPdfObject, components: number): boolean {
+	try {
+		const entry = ref.get("ColorSpace");
+		if (!entry.isArray()) return false;
+		const family = entry.get(0);
+		if (!family.isName() || family.asName() !== "ICCBased") return false;
+		const n = entry.get(1).get("N");
+		return n.isNumber() && n.asNumber() === components;
+	} catch {
+		return false;
+	}
+}
+
+/** True when /ColorSpace names a device space, whose samples need no transform. */
+function isDeviceEntry(ref: MuPdfObject): boolean {
+	try {
+		const entry = ref.get("ColorSpace");
+		if (!entry.isName()) return false;
+		const name = entry.asName();
+		return name === "DeviceRGB" || name === "DeviceGray" || name === "G" || name === "RGB";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Copies a pixmap out of the WASM heap into a packed plane, shrinks it, and
+ * destroys the pixmap. The full-size plane is local to this function so it can
+ * be collected before the encoder runs: only one large buffer is ever live.
+ */
+function shrink(
+	pixmap: MuPixmap,
+	targetWidth: number,
+	targetHeight: number,
+	transfer: Transfer,
+): Plane {
+	const full = pixmapToPlane(pixmap);
+	return resampleArea(full, targetWidth, targetHeight, transfer);
+}
+
+/** Packs a pixmap's samples, dropping mupdf's row padding, then destroys it. */
+function pixmapToPlane(pixmap: MuPixmap): Plane {
+	try {
+		const width = pixmap.getWidth();
+		const height = pixmap.getHeight();
+		const components = pixmap.getNumberOfComponents();
+		const stride = pixmap.getStride();
+		const rowBytes = width * components;
+
+		// A view into the WASM heap: copy it before anything can grow the heap.
+		const samples = pixmap.getPixels();
+		const data = new Uint8Array(rowBytes * height);
+		if (stride === rowBytes) {
+			data.set(samples.subarray(0, data.length));
+		} else {
+			for (let y = 0; y < height; y++) {
+				const from = y * stride;
+				data.set(samples.subarray(from, from + rowBytes), y * rowBytes);
+			}
+		}
+
+		return { data, width, height, components };
+	} finally {
+		pixmap.destroy();
 	}
 }
 
@@ -691,7 +813,7 @@ function decodePixmap(mupdf: MuPdf, doc: MuDocument, ref: MuPdfObject): MuPixmap
  */
 function isMaskFullyOpaque(mupdf: MuPdf, doc: MuDocument, mask: ImageEntry): boolean {
 	if (mask.isStencil) return false;
-	const pixmap = decodePixmap(mupdf, doc, doc.newIndirect(mask.xref));
+	const pixmap = decodeImage(mupdf, doc, doc.newIndirect(mask.xref)).pixmap;
 	try {
 		return minChannelValue(pixmap) >= SMASK_OPAQUE_THRESHOLD;
 	} finally {
@@ -722,140 +844,6 @@ function minChannelValue(pixmap: MuPixmap): number {
 	return min;
 }
 
-/** Moves the pixels onto a canvas and destroys the pixmap. */
-function pixmapToSurface(pixmap: MuPixmap): Surface {
-	try {
-		const width = pixmap.getWidth();
-		const height = pixmap.getHeight();
-		const components = pixmap.getNumberOfComponents();
-		const stride = pixmap.getStride();
-		const gray = components === 1;
-
-		const samples = pixmap.getPixels();
-		const rgba = new Uint8ClampedArray(width * height * 4);
-
-		for (let y = 0; y < height; y++) {
-			let src = y * stride;
-			let dst = y * width * 4;
-			for (let x = 0; x < width; x++) {
-				if (gray) {
-					const value = samples[src];
-					rgba[dst] = value;
-					rgba[dst + 1] = value;
-					rgba[dst + 2] = value;
-				} else {
-					rgba[dst] = samples[src];
-					rgba[dst + 1] = samples[src + 1];
-					rgba[dst + 2] = samples[src + 2];
-				}
-				// Alpha is deliberately forced opaque: transparency lives in the
-				// /SMask object, and letting the canvas composite it here would
-				// bake the mask into the colour channels.
-				rgba[dst + 3] = 255;
-				src += components;
-				dst += 4;
-			}
-		}
-
-		// Release the WASM-side copy before the canvas doubles the footprint.
-		pixmap.destroy();
-
-		const canvas = new OffscreenCanvas(width, height);
-		const ctx = canvas.getContext("2d", { alpha: false });
-		if (!ctx) throw new Error("OffscreenCanvas 2D no disponible");
-		ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
-
-		return {
-			canvas,
-			width,
-			height,
-			gray,
-			release: () => {
-				canvas.width = 0;
-				canvas.height = 0;
-			},
-		};
-	} catch (error) {
-		pixmap.destroy();
-		throw error;
-	}
-}
-
-/**
- * Resamples to the target size, halving at most once per step. A single large
- * `drawImage` reduction point-samples on several engines and aliases badly on
- * detailed photography; repeated halving averages neighbours instead.
- */
-function resample(surface: Surface, targetWidth: number, targetHeight: number): OffscreenCanvas {
-	let current = surface.canvas;
-	let currentWidth = surface.width;
-	let currentHeight = surface.height;
-	let owned = false;
-
-	while (currentWidth >= targetWidth * 2 && currentHeight >= targetHeight * 2) {
-		const nextWidth = Math.max(targetWidth, Math.floor(currentWidth / 2));
-		const nextHeight = Math.max(targetHeight, Math.floor(currentHeight / 2));
-		const next = drawScaled(current, currentWidth, currentHeight, nextWidth, nextHeight);
-		if (owned) {
-			current.width = 0;
-			current.height = 0;
-		}
-		current = next;
-		currentWidth = nextWidth;
-		currentHeight = nextHeight;
-		owned = true;
-	}
-
-	if (currentWidth === targetWidth && currentHeight === targetHeight && owned) {
-		return current;
-	}
-
-	const final = drawScaled(current, currentWidth, currentHeight, targetWidth, targetHeight);
-	if (owned) {
-		current.width = 0;
-		current.height = 0;
-	}
-	return final;
-}
-
-function drawScaled(
-	source: OffscreenCanvas,
-	sourceWidth: number,
-	sourceHeight: number,
-	width: number,
-	height: number,
-): OffscreenCanvas {
-	const canvas = new OffscreenCanvas(width, height);
-	const ctx = canvas.getContext("2d", { alpha: false });
-	if (!ctx) throw new Error("OffscreenCanvas 2D no disponible");
-	ctx.imageSmoothingEnabled = true;
-	ctx.imageSmoothingQuality = "high";
-	ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
-	return canvas;
-}
-
-async function encodeJpeg(
-	surface: Surface,
-	width: number,
-	height: number,
-	quality: number,
-): Promise<Uint8Array> {
-	const canvas = resample(surface, width, height);
-	try {
-		const blob = await canvas.convertToBlob({
-			type: "image/jpeg",
-			quality: quality / 100,
-		});
-		if (blob.type !== "image/jpeg") {
-			throw new Error(`el codificador devolvió ${blob.type || "un tipo desconocido"}`);
-		}
-		return new Uint8Array(await blob.arrayBuffer());
-	} finally {
-		canvas.width = 0;
-		canvas.height = 0;
-	}
-}
-
 /**
  * zlib-wrapped deflate, which is precisely the /FlateDecode encoding. Doing it
  * here rather than at save time is what makes the byte counts in the report and
@@ -866,26 +854,6 @@ async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
 		.stream()
 		.pipeThrough(new CompressionStream("deflate"));
 	return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-/** One byte per pixel, straight from the resampled canvas. */
-async function encodeGray(
-	surface: Surface,
-	width: number,
-	height: number,
-): Promise<Uint8Array> {
-	const canvas = resample(surface, width, height);
-	try {
-		const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
-		if (!ctx) throw new Error("OffscreenCanvas 2D no disponible");
-		const data = ctx.getImageData(0, 0, width, height).data;
-		const out = new Uint8Array(width * height);
-		for (let i = 0, src = 0; i < out.length; i++, src += 4) out[i] = data[src];
-		return out;
-	} finally {
-		canvas.width = 0;
-		canvas.height = 0;
-	}
 }
 
 /* ----------------------------------------------------------------- utils ---- */
