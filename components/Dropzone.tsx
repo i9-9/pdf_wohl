@@ -5,7 +5,8 @@ import { useCallback, useId, useRef, useState } from "react";
 interface DropzoneProps {
 	onFiles: (files: File[]) => void;
 	disabled: boolean;
-	/** Sit inside a chassis without doubling the outer border. */
+	/** Why the zone is disabled — shown as the main line. */
+	disabledReason?: string | null;
 	flush?: boolean;
 }
 
@@ -16,7 +17,12 @@ function pdfsOnly(list: FileList | null): File[] {
 	);
 }
 
-export default function Dropzone({ onFiles, disabled, flush = false }: DropzoneProps) {
+export default function Dropzone({
+	onFiles,
+	disabled,
+	disabledReason = null,
+	flush = false,
+}: DropzoneProps) {
 	const [dragging, setDragging] = useState(false);
 	const [rejected, setRejected] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -78,26 +84,37 @@ export default function Dropzone({ onFiles, disabled, flush = false }: DropzoneP
 				role="button"
 				tabIndex={disabled ? -1 : 0}
 				aria-disabled={disabled}
-				aria-label="Elegir archivos PDF"
+				aria-label={disabled ? (disabledReason ?? "No disponible") : "Elegir archivos PDF"}
 			>
-				<p
-					className={[
-						"text-[1.0625rem]",
-						dragging ? "text-[var(--color-accent)]" : "text-[var(--color-ink)]",
-					].join(" ")}
-				>
-					{dragging ? "Soltá para agregar" : "Arrastrá un PDF"}
-				</p>
-				<p className="mt-2 text-sm text-[var(--color-mute)]">
-					o{" "}
-					<label
-						htmlFor={inputId}
-						className="cursor-pointer text-[var(--color-ink)] underline decoration-[var(--color-rule)] underline-offset-4 hover:decoration-[var(--color-ink)]"
-						onClick={(event) => event.stopPropagation()}
-					>
-						elegí del disco
-					</label>
-				</p>
+				{disabled ? (
+					<>
+						<p className="text-[1.0625rem] text-[var(--color-mute)]">
+							{disabledReason ?? "No disponible"}
+						</p>
+						<p className="mt-2 text-sm text-[var(--color-faint)]">Esperá un momento</p>
+					</>
+				) : (
+					<>
+						<p
+							className={[
+								"text-[1.0625rem]",
+								dragging ? "text-[var(--color-accent)]" : "text-[var(--color-ink)]",
+							].join(" ")}
+						>
+							{dragging ? "Soltá para agregar" : "Arrastrá un PDF"}
+						</p>
+						<p className="mt-2 text-sm text-[var(--color-mute)]">
+							o{" "}
+							<label
+								htmlFor={inputId}
+								className="cursor-pointer text-[var(--color-ink)] underline decoration-[var(--color-rule)] underline-offset-4 hover:decoration-[var(--color-ink)]"
+								onClick={(event) => event.stopPropagation()}
+							>
+								elegí del disco
+							</label>
+						</p>
+					</>
+				)}
 				<input
 					id={inputId}
 					ref={inputRef}

@@ -79,6 +79,13 @@ export interface WorkerRequest {
 	settings: CompressSettings;
 }
 
+export interface WorkerCancelRequest {
+	kind: "cancel";
+	jobId: string;
+}
+
+export type WorkerIncoming = WorkerRequest | WorkerCancelRequest;
+
 export type WorkerResponse =
 	| { kind: "ready" }
 	| { kind: "phase"; jobId: string; phase: JobPhase; detail: string }
@@ -93,6 +100,7 @@ export type WorkerResponse =
 			bytesSaved: number;
 	  }
 	| { kind: "done"; jobId: string; buffer: ArrayBuffer; stats: CompressStats }
+	| { kind: "cancelled"; jobId: string }
 	| { kind: "error"; jobId: string; message: string };
 
 export type JobPhase =

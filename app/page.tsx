@@ -19,11 +19,13 @@ import {
 import type {
 	CompressSettings,
 	QueueItem,
+	WorkerIncoming,
 	WorkerRequest,
 	WorkerResponse,
 } from "../lib/types";
 
 interface ComparePayload {
+	id: string;
 	title: string;
 	before: Uint8Array;
 	after: Uint8Array;
@@ -44,6 +46,8 @@ export default function Page() {
 	const sourcesRef = useRef<Map<string, Uint8Array>>(new Map());
 	const resultsRef = useRef<Map<string, Uint8Array>>(new Map());
 	const urlsRef = useRef<Map<string, string>>(new Map());
+	/** Ignore late worker messages for jobs the user already cancelled. */
+	const cancelledRef = useRef<Set<string>>(new Set());
 
 	const patch = useCallback((id: string, changes: Partial<QueueItem>) => {
 		setItems((current) =>
@@ -60,6 +64,17 @@ export default function Page() {
 
 		worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 			const message = event.data;
+			if (
+				"jobId" in message &&
+				message.jobId !== "" &&
+				cancelledRef.current.has(message.jobId)
+			) {
+				if (message.kind === "cancelled" || message.kind === "done" || message.kind === "error") {
+					cancelledRef.current.delete(message.jobId);
+				}
+				return;
+			}
+
 			switch (message.kind) {
 				case "ready":
 					setEngineReady(true);
@@ -100,6 +115,9 @@ export default function Page() {
 					});
 					break;
 				}
+				case "cancelled":
+					cancelledRef.current.delete(message.jobId);
+					break;
 				case "error":
 					if (message.jobId === "") {
 						setEngineError(message.message);
@@ -126,13 +144,14 @@ export default function Page() {
 			urlsRef.current.clear();
 			sourcesRef.current.clear();
 			resultsRef.current.clear();
+			cancelledRef.current.clear();
 		};
 	}, [patch]);
 
 	const enqueue = useCallback(
 		async (files: File[]) => {
 			const worker = workerRef.current;
-			if (!worker) return;
+			if (!worker || !engineReady || engineError) return;
 
 			for (const file of files) {
 				const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -174,16 +193,21 @@ export default function Page() {
 				}
 			}
 		},
-		[settings, patch],
+		[settings, patch, engineReady, engineError],
 	);
 
 	const remove = useCallback((id: string) => {
+		cancelledRef.current.add(id);
+		const cancel: WorkerIncoming = { kind: "cancel", jobId: id };
+		workerRef.current?.postMessage(cancel);
+
 		const url = urlsRef.current.get(id);
 		if (url) URL.revokeObjectURL(url);
 		urlsRef.current.delete(id);
 		sourcesRef.current.delete(id);
 		resultsRef.current.delete(id);
 		setItems((current) => current.filter((item) => item.id !== id));
+		setCompare((current) => (current?.id === id ? null : current));
 	}, []);
 
 	const openCompare = useCallback(
@@ -192,13 +216,79 @@ export default function Page() {
 			const after = resultsRef.current.get(id);
 			const item = items.find((candidate) => candidate.id === id);
 			if (!before || !after || !item) return;
-			setCompare({ title: item.file.name, before, after });
+			setCompare({ id, title: item.file.name, before, after });
 		},
 		[items],
 	);
 
+	const reprocess = useCallback(
+		(id: string) => {
+			const worker = workerRef.current;
+			const source = sourcesRef.current.get(id);
+			if (!worker || !source || !engineReady || engineError) return;
+
+			cancelledRef.current.delete(id);
+			const previousUrl = urlsRef.current.get(id);
+			if (previousUrl) URL.revokeObjectURL(previousUrl);
+			urlsRef.current.delete(id);
+			resultsRef.current.delete(id);
+			setCompare((current) => (current?.id === id ? null : current));
+
+			patch(id, {
+				phase: "queued",
+				detail: "",
+				progress: -1,
+				current: 0,
+				total: 0,
+				resultBytes: 0,
+				bytesSaved: 0,
+				stats: null,
+				resultUrl: null,
+				resultName: outputName(
+					items.find((item) => item.id === id)?.file.name ?? "archivo.pdf",
+					settings.targetPpi,
+				),
+				error: null,
+			});
+
+			const copy = source.slice();
+			const fileName = items.find((item) => item.id === id)?.file.name ?? "archivo.pdf";
+			const request: WorkerRequest = {
+				kind: "compress",
+				jobId: id,
+				fileName,
+				buffer: copy.buffer as ArrayBuffer,
+				settings,
+			};
+			worker.postMessage(request, [request.buffer]);
+		},
+		[engineReady, engineError, settings, patch, items],
+	);
+
+	const downloadAll = useCallback(async () => {
+		const finished = items.filter((item) => item.phase === "done" && item.resultUrl);
+		for (const item of finished) {
+			if (!item.resultUrl) continue;
+			const anchor = document.createElement("a");
+			anchor.href = item.resultUrl;
+			anchor.download = item.resultName;
+			anchor.rel = "noopener";
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			// Browsers throttle burst downloads; a short gap keeps them all firing.
+			await new Promise((resolve) => setTimeout(resolve, 180));
+		}
+	}, [items]);
+
 	const activePreset = matchPreset(settings);
 	const busy = items.some((item) => item.phase !== "done" && item.phase !== "error");
+	const dropDisabled = !engineReady || engineError !== null;
+	const dropReason = engineError
+		? "Motor no disponible"
+		: !engineReady
+			? "Cargando motor…"
+			: null;
 
 	const totals = useMemo(() => {
 		const finished = items.filter((item) => item.phase === "done");
@@ -209,18 +299,19 @@ export default function Page() {
 
 	return (
 		<main className="mx-auto w-full max-w-[1120px] px-6 pb-24 pt-14 sm:px-10 sm:pt-16">
-			<header className="mb-14 grid grid-cols-12 items-end gap-x-8 gap-y-6">
+			<header className="mb-12 grid grid-cols-12 items-end gap-x-8 gap-y-6">
 				<div className="col-span-12 md:col-span-8">
 					<h1 className="text-[2.5rem] font-medium leading-none tracking-[-0.03em] text-[var(--color-ink)] sm:text-[3.25rem]">
 						PDF Wohl
 					</h1>
 					<p className="mt-5 max-w-xl text-[0.9375rem] leading-relaxed text-[var(--color-mute)]">
-						Baja la resolución de imágenes sobredimensionadas. Texto y vectores intactos.
-						Nada sale del navegador.
+						Baja la resolución de imágenes sobredimensionadas.
+						<br />
+						Texto y vectores intactos. Nada sale del navegador.
 					</p>
 				</div>
 				<div className="col-span-12 flex flex-col justify-end md:col-span-4 md:items-end">
-					<p className="label">Estado</p>
+					<p className="label">Motor</p>
 					<p className="mt-2 flex items-center gap-2 text-sm text-[var(--color-ink)] md:justify-end">
 						<span
 							aria-hidden
@@ -234,7 +325,11 @@ export default function Page() {
 							}}
 						/>
 						<span className="num">
-							{engineError ? "error" : engineReady ? "listo" : "…"}
+							{engineError
+								? "no disponible"
+								: engineReady
+									? "listo"
+									: "cargando…"}
 						</span>
 					</p>
 					{engineError && (
@@ -243,7 +338,66 @@ export default function Page() {
 				</div>
 			</header>
 
-			<section className="mb-12" aria-labelledby="presets-heading">
+			<section className="mb-12" aria-labelledby="queue-heading">
+				<div className="mb-4 grid grid-cols-12 items-baseline gap-x-8">
+					<h2 id="queue-heading" className="label col-span-6 sm:col-span-4">
+						Archivos
+					</h2>
+					<div className="col-span-12 flex flex-wrap items-center justify-end gap-3 sm:col-span-8">
+						{totals.count > 1 && (
+							<button type="button" onClick={() => void downloadAll()} className="btn-primary">
+								Descargar todos
+							</button>
+						)}
+						<p className="text-xs text-[var(--color-mute)]">
+							{busy ? (
+								"Procesando"
+							) : items.length > 0 ? (
+								<span className="num text-[var(--color-faint)]">{items.length}</span>
+							) : null}
+						</p>
+					</div>
+				</div>
+
+				<div className="chassis overflow-hidden">
+					<Dropzone
+						onFiles={(files) => void enqueue(files)}
+						disabled={dropDisabled}
+						disabledReason={dropReason}
+						flush
+					/>
+
+					{items.length > 0 && (
+						<ul>
+							{items.map((item) => (
+								<FileRow
+									key={item.id}
+									item={item}
+									onRemove={remove}
+									onCompare={openCompare}
+									onReprocess={reprocess}
+								/>
+							))}
+						</ul>
+					)}
+				</div>
+
+				{totals.count > 1 && (
+					<p className="mt-5 text-xs text-[var(--color-mute)]">
+						<span className="num text-[var(--color-ink)]">{totals.count}</span>
+						{" archivos · "}
+						<span className="num">{formatBytes(totals.original)}</span>
+						{" → "}
+						<span className="num text-[var(--color-ink)]">{formatBytes(totals.result)}</span>
+						{" · "}
+						<span className="num text-[var(--color-accent)]">
+							−{formatPercent(savedFraction(totals.original, totals.result))}
+						</span>
+					</p>
+				)}
+			</section>
+
+			<section aria-labelledby="presets-heading">
 				<div className="grid grid-cols-12 gap-x-8 gap-y-8">
 					<div className="col-span-12 sm:col-span-3">
 						<h2 id="presets-heading" className="label">
@@ -255,6 +409,9 @@ export default function Page() {
 								{Math.round(settings.targetPpi * 1.15)}
 							</span>{" "}
 							ppi. Por debajo, intacto.
+						</p>
+						<p className="mt-3 text-xs leading-relaxed text-[var(--color-faint)]">
+							Los archivos nuevos usan esta calidad. Los ya listos: «Otra pasada».
 						</p>
 					</div>
 
@@ -293,6 +450,9 @@ export default function Page() {
 								);
 							})}
 						</div>
+						{!activePreset && (
+							<p className="mt-3 text-xs text-[var(--color-mute)]">Ajuste manual</p>
+						)}
 
 						<div className="mt-10 grid grid-cols-1 gap-x-10 gap-y-10 sm:grid-cols-2">
 							<Slider
@@ -307,8 +467,8 @@ export default function Page() {
 								}
 							/>
 							<Slider
-								label="JPEG"
-								unit=""
+								label="Calidad JPEG"
+								unit="q"
 								min={QUALITY_MIN}
 								max={QUALITY_MAX}
 								step={1}
@@ -318,58 +478,11 @@ export default function Page() {
 								}
 							/>
 						</div>
+						<p className="mt-3 text-xs text-[var(--color-faint)]">
+							JPEG solo aplica a imágenes RGB. Los grises van sin pérdida.
+						</p>
 					</div>
 				</div>
-			</section>
-
-			<section aria-labelledby="queue-heading">
-				<div className="mb-4 grid grid-cols-12 items-baseline gap-x-8">
-					<h2 id="queue-heading" className="label col-span-6">
-						Archivos
-					</h2>
-					<p className="col-span-6 text-right text-xs text-[var(--color-mute)]">
-						{busy ? (
-							"Procesando"
-						) : items.length > 0 ? (
-							<span className="num text-[var(--color-faint)]">{items.length}</span>
-						) : null}
-					</p>
-				</div>
-
-				<div className="chassis overflow-hidden">
-					<Dropzone
-						onFiles={(files) => void enqueue(files)}
-						disabled={engineError !== null}
-						flush
-					/>
-
-					{items.length > 0 && (
-						<ul>
-							{items.map((item) => (
-								<FileRow
-									key={item.id}
-									item={item}
-									onRemove={remove}
-									onCompare={openCompare}
-								/>
-							))}
-						</ul>
-					)}
-				</div>
-
-				{totals.count > 1 && (
-					<p className="mt-5 text-xs text-[var(--color-mute)]">
-						<span className="num text-[var(--color-ink)]">{totals.count}</span>
-						{" archivos · "}
-						<span className="num">{formatBytes(totals.original)}</span>
-						{" → "}
-						<span className="num text-[var(--color-ink)]">{formatBytes(totals.result)}</span>
-						{" · "}
-						<span className="num text-[var(--color-accent)]">
-							−{formatPercent(savedFraction(totals.original, totals.result))}
-						</span>
-					</p>
-				)}
 			</section>
 
 			{compare && (

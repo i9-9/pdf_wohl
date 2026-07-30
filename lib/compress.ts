@@ -73,6 +73,20 @@ export interface ProgressReport {
 export interface CompressCallbacks {
 	onPhase?: (phase: "loading" | "analyzing" | "recompressing" | "saving", detail: string) => void;
 	onProgress?: (report: ProgressReport) => void;
+	/** Checked between objects so Quitar can stop an in-flight job. */
+	signal?: AbortSignal;
+}
+
+/** Thrown when `signal` aborts mid-compress. Not a failure of the document. */
+export class CompressAbortError extends Error {
+	override readonly name = "CompressAbortError";
+	constructor() {
+		super("cancelado");
+	}
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw new CompressAbortError();
 }
 
 /** Facts read straight from an image XObject's dictionary. */
@@ -113,6 +127,7 @@ export async function compressPdf(
 	const originalBytes = input.byteLength;
 
 	callbacks.onPhase?.("loading", "Abriendo documento");
+	throwIfAborted(callbacks.signal);
 	// mupdf copies the bytes into the WASM heap; `input` stays owned by us.
 	const doc = new mupdf.PDFDocument(input);
 
@@ -120,9 +135,11 @@ export async function compressPdf(
 		const pageCount = doc.countPages();
 
 		callbacks.onPhase?.("analyzing", "Inventario de imágenes");
+		throwIfAborted(callbacks.signal);
 		const images = collectImages(doc);
 
 		callbacks.onPhase?.("analyzing", `Midiendo ${images.size} imagen(es) en ${pageCount} página(s)`);
+		throwIfAborted(callbacks.signal);
 		const placements = measurePlacements(mupdf, doc, images);
 
 		// Objects that serve as somebody's soft mask are driven by their parent.
@@ -227,6 +244,7 @@ export async function compressPdf(
 		};
 
 		for (let i = 0; i < decisions.length; i++) {
+			throwIfAborted(callbacks.signal);
 			const decision = decisions[i];
 			const { entry } = decision;
 			const report = reports.get(entry.xref) ?? blankReport(entry);
@@ -307,6 +325,7 @@ export async function compressPdf(
 		// mask. A mask that genuinely does something is left exactly as it is:
 		// its parent is not changing size, so there is nothing to realign.
 		for (let i = 0; i < maskOnlyParents.length; i++) {
+			throwIfAborted(callbacks.signal);
 			const entry = maskOnlyParents[i];
 			const maskXref = entry.smaskXref;
 			const maskEntry = maskXref === null ? undefined : images.get(maskXref);
@@ -333,6 +352,7 @@ export async function compressPdf(
 			await Promise.resolve();
 		}
 
+		throwIfAborted(callbacks.signal);
 		callbacks.onPhase?.("saving", "Recolectando objetos y comprimiendo");
 		const saved = doc.saveToBuffer({
 			// Level 3: drop unreachable objects and merge duplicates.

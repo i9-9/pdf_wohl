@@ -103,6 +103,25 @@ body {
 .progress.is-error > span {
 	background: var(--color-faint);
 }
+.progress.is-indeterminate > span {
+	width: 40% !important;
+	animation: progress-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes progress-indeterminate {
+	0% {
+		transform: translateX(-120%);
+	}
+	100% {
+		transform: translateX(280%);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.progress.is-indeterminate > span {
+		animation: none;
+		width: 100% !important;
+		opacity: 0.35;
+	}
+}
 
 input[type="range"] {
 	appearance: none;

@@ -8,6 +8,7 @@ interface FileRowProps {
 	item: QueueItem;
 	onRemove: (id: string) => void;
 	onCompare: (id: string) => void;
+	onReprocess: (id: string) => void;
 }
 
 const PHASE_LABEL: Record<QueueItem["phase"], string> = {
@@ -20,7 +21,7 @@ const PHASE_LABEL: Record<QueueItem["phase"], string> = {
 	error: "Error",
 };
 
-export default function FileRow({ item, onRemove, onCompare }: FileRowProps) {
+export default function FileRow({ item, onRemove, onCompare, onReprocess }: FileRowProps) {
 	const [open, setOpen] = useState(false);
 	const done = item.phase === "done";
 	const failed = item.phase === "error";
@@ -28,6 +29,7 @@ export default function FileRow({ item, onRemove, onCompare }: FileRowProps) {
 	const saved = done ? savedFraction(item.originalBytes, item.resultBytes) : 0;
 	const grew = done && item.stats?.returnedOriginal === true;
 	const width = Math.round((failed ? 1 : Math.max(0, item.progress)) * 100);
+	const indeterminate = !done && !failed && item.progress < 0;
 
 	return (
 		<li className="border-t border-[var(--color-rule)]">
@@ -69,6 +71,16 @@ export default function FileRow({ item, onRemove, onCompare }: FileRowProps) {
 								Comparar
 							</button>
 						)}
+						{done && (
+							<button
+								type="button"
+								onClick={() => onReprocess(item.id)}
+								className="px-2 py-1.5 text-xs text-[var(--color-mute)] underline decoration-[var(--color-rule)] underline-offset-4 hover:text-[var(--color-ink)]"
+								title="Volver a comprimir con la calidad actual"
+							>
+								Otra pasada
+							</button>
+						)}
 						{item.stats && (
 							<button
 								type="button"
@@ -83,9 +95,13 @@ export default function FileRow({ item, onRemove, onCompare }: FileRowProps) {
 							type="button"
 							onClick={() => onRemove(item.id)}
 							className="px-2 py-1.5 text-xs text-[var(--color-faint)] hover:text-[var(--color-ink)]"
-							aria-label={`Quitar ${item.file.name}`}
+							aria-label={
+								done || failed
+									? `Quitar ${item.file.name}`
+									: `Cancelar y quitar ${item.file.name}`
+							}
 						>
-							Quitar
+							{done || failed ? "Quitar" : "Cancelar"}
 						</button>
 					</div>
 				</div>
@@ -95,13 +111,15 @@ export default function FileRow({ item, onRemove, onCompare }: FileRowProps) {
 						"progress mt-4",
 						done && !grew ? "is-done" : "",
 						failed ? "is-error" : "",
+						indeterminate ? "is-indeterminate" : "",
 					].join(" ")}
 					role="progressbar"
 					aria-valuemin={0}
 					aria-valuemax={100}
-					aria-valuenow={width}
+					aria-valuenow={indeterminate ? undefined : width}
+					aria-busy={indeterminate || undefined}
 				>
-					<span style={{ width: `${width}%` }} />
+					<span style={{ width: indeterminate ? undefined : `${width}%` }} />
 				</div>
 
 				<p className="mt-2 flex flex-wrap items-baseline gap-x-3 text-xs text-[var(--color-mute)]">
