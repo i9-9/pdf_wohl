@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# next
+.next/
+out/
+tsconfig.tsbuildinfo
+next-env.d.ts
+
+# assets copied by scripts/copy-assets.mjs on predev/prebuild
+public/mupdf/
+public/pdfjs/
+
+# local tooling / fixtures (not part of the deployable app)
+spike/
+.pw-browsers/
+*.pdf
+
+# env / OS
+.env*
+.DS_Store
+*.pem
+
+# debug / IDE
+npm-debug.log*
+.vscode/
+.idea/
