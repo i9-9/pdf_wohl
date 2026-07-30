@@ -1,8 +1,8 @@
 {
-  "name": "pdf-shrink",
+  "name": "pdf-wohl",
   "version": "1.0.0",
   "private": true,
-  "description": "Compresor de PDF 100% cliente: baja la resolución de imágenes sobredimensionadas sin tocar texto ni vectores.",
+  "description": "PDF Wohl — compresor de PDF 100% cliente: baja la resolución de imágenes sobredimensionadas sin tocar texto ni vectores.",
   "scripts": {
     "predev": "node scripts/copy-assets.mjs",
     "dev": "next dev",

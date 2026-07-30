@@ -1,18 +1,18 @@
 @import "tailwindcss";
 
 @theme {
-	--font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+	--font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
 
-	--color-ink-50: #f6f6f5;
-	--color-ink-100: #e8e8e6;
-	--color-ink-200: #d3d3cf;
-	--color-ink-300: #b0b0aa;
-	--color-ink-400: #83837c;
-	--color-ink-500: #5f5f59;
-	--color-ink-600: #474742;
-	--color-ink-700: #33332f;
-	--color-ink-800: #22221f;
-	--color-ink-900: #141412;
+	/* Apple desk + Braun chassis */
+	--color-desk: #ecece8;
+	--color-paper: #f5f5f2;
+	--color-surface: #ffffff;
+	--color-rule: #e3e3df;
+	--color-ink: #1d1d1f;
+	--color-mute: #6e6e73;
+	--color-faint: #aeaeb2;
+	--color-accent: #c2410c;
+	--color-ready: #1d1d1f;
 }
 
 html {
@@ -20,52 +20,160 @@ html {
 }
 
 body {
-	background-color: var(--color-ink-50);
-	color: var(--color-ink-900);
+	color: var(--color-ink);
+	font-family: var(--font-sans);
+	font-weight: 400;
+	letter-spacing: -0.03em; /* Figma −3% / ≈ Illustrator −30 tracking */
 	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	background-color: var(--color-desk);
+	background-image:
+		radial-gradient(120% 80% at 50% -10%, #ffffff 0%, transparent 55%),
+		linear-gradient(180deg, var(--color-paper) 0%, var(--color-desk) 100%);
+	background-attachment: fixed;
+	min-height: 100dvh;
 }
 
-/* Every number in this app is monospaced and tabular so columns line up and
-   progress readouts do not jitter as digits change. */
 .num {
-	font-family: var(--font-mono);
-	font-variant-numeric: tabular-nums;
-	font-feature-settings: "tnum";
+	font-family: var(--font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-feature-settings: "tnum", "lnum";
+	letter-spacing: -0.03em;
 }
 
-/* Sober, uniform range inputs: no platform accent colours, no glow. */
+.label {
+	font-size: 0.6875rem;
+	font-weight: 500;
+	letter-spacing: 0.12em; /* labels keep open tracking on purpose */
+	text-transform: uppercase;
+	color: var(--color-mute);
+}
+
+.chassis {
+	background: var(--color-surface);
+	box-shadow: 0 12px 40px rgb(29 29 31 / 0.05);
+}
+
+.btn-primary {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--color-ink);
+	color: var(--color-surface);
+	font-size: 0.75rem;
+	letter-spacing: -0.03em;
+	padding: 0.5rem 0.875rem;
+	transition: background-color 160ms ease, color 160ms ease;
+}
+.btn-primary:hover {
+	background: var(--color-accent);
+}
+
+.btn-ghost {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--color-ink);
+	color: var(--color-ink);
+	font-size: 0.75rem;
+	letter-spacing: -0.03em;
+	padding: 0.5rem 0.875rem;
+	background: transparent;
+	transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+.btn-ghost:hover {
+	background: var(--color-ink);
+	color: var(--color-surface);
+}
+
+.progress {
+	height: 2px;
+	background: var(--color-rule);
+	overflow: hidden;
+}
+.progress > span {
+	display: block;
+	height: 100%;
+	background: var(--color-ink);
+	transition: width 220ms ease;
+}
+.progress.is-done > span {
+	background: var(--color-accent);
+}
+.progress.is-error > span {
+	background: var(--color-faint);
+}
+
 input[type="range"] {
 	appearance: none;
 	-webkit-appearance: none;
-	height: 1.5rem;
+	display: block;
+	width: 100%;
+	height: 2.75rem;
 	background: transparent;
 	cursor: pointer;
 }
 input[type="range"]::-webkit-slider-runnable-track {
-	height: 2px;
-	background: var(--color-ink-300);
+	height: 6px;
+	background: var(--color-rule);
 }
 input[type="range"]::-webkit-slider-thumb {
 	appearance: none;
 	-webkit-appearance: none;
-	width: 12px;
-	height: 12px;
-	margin-top: -5px;
-	background: var(--color-ink-800);
+	width: 22px;
+	height: 22px;
+	margin-top: -8px;
+	background: var(--color-ink);
+	border: 3px solid var(--color-surface);
 	border-radius: 0;
+	box-shadow: 0 0 0 1px var(--color-ink);
+	transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+	background: var(--color-accent);
+	box-shadow: 0 0 0 1px var(--color-accent);
+}
+input[type="range"]::-webkit-slider-thumb:active {
+	background: var(--color-accent);
+	box-shadow: 0 0 0 1px var(--color-accent);
 }
 input[type="range"]::-moz-range-track {
-	height: 2px;
-	background: var(--color-ink-300);
+	height: 6px;
+	background: var(--color-rule);
 }
 input[type="range"]::-moz-range-thumb {
-	width: 12px;
-	height: 12px;
-	border: 0;
+	width: 22px;
+	height: 22px;
+	border: 3px solid var(--color-surface);
 	border-radius: 0;
-	background: var(--color-ink-800);
+	background: var(--color-ink);
+	box-shadow: 0 0 0 1px var(--color-ink);
+}
+input[type="range"]::-moz-range-thumb:hover,
+input[type="range"]::-moz-range-thumb:active {
+	background: var(--color-accent);
+	box-shadow: 0 0 0 1px var(--color-accent);
 }
 input[type="range"]:focus-visible {
-	outline: 1px solid var(--color-ink-800);
-	outline-offset: 2px;
+	outline: none;
+}
+input[type="range"]:focus-visible::-webkit-slider-thumb,
+input[type="range"]:focus-visible::-moz-range-thumb {
+	background: var(--color-accent);
+	box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+button:focus-visible,
+a:focus-visible,
+select:focus-visible {
+	outline: 1px solid var(--color-accent);
+	outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		transition: none !important;
+	}
 }

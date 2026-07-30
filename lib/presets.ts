@@ -3,22 +3,22 @@ import type { CompressSettings, Preset, PresetId } from "./types";
 export const PRESETS: readonly Preset[] = [
 	{
 		id: "max",
-		label: "Máxima calidad",
-		hint: "200 ppi · q85 — impresión chica y zoom fuerte",
+		label: "Máxima",
+		hint: "200 ppi · q85",
 		targetPpi: 200,
 		quality: 85,
 	},
 	{
 		id: "balanced",
 		label: "Equilibrado",
-		hint: "150 ppi · q78 — proyección y pantalla",
+		hint: "150 ppi · q78",
 		targetPpi: 150,
 		quality: 78,
 	},
 	{
 		id: "light",
 		label: "Liviano",
-		hint: "110 ppi · q68 — mail y revisión rápida",
+		hint: "110 ppi · q68",
 		targetPpi: 110,
 		quality: 68,
 	},

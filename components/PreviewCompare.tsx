@@ -6,7 +6,6 @@ import { formatBytes } from "../lib/format";
 
 interface PreviewCompareProps {
 	title: string;
-	/** Original bytes. Copies are kept because pdf.js detaches what it receives. */
 	before: Uint8Array;
 	after: Uint8Array;
 	onClose: () => void;
@@ -23,18 +22,12 @@ interface Loaded {
 	pageCount: number;
 }
 
-/**
- * pdf.js is loaded lazily and only here: it exists to prove the output still
- * renders, and should not be part of the initial payload.
- */
 async function openBoth(before: Uint8Array, after: Uint8Array): Promise<Loaded> {
 	const pdfjs = await import("pdfjs-dist");
 	pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.min.mjs";
 
 	const load = (bytes: Uint8Array): Promise<PDFDocumentProxy> =>
 		pdfjs.getDocument({
-			// pdf.js takes ownership of the buffer it is handed, so each side gets
-			// its own copy and the caller's arrays stay intact for downloads.
 			data: bytes.slice(),
 			isEvalSupported: false,
 		}).promise;
@@ -56,7 +49,6 @@ export default function PreviewCompare({ title, before, after, onClose }: Previe
 
 	const beforeCanvas = useRef<HTMLCanvasElement>(null);
 	const afterCanvas = useRef<HTMLCanvasElement>(null);
-	// Both panes scroll as one so the eye compares the same region.
 	const beforePane = useRef<HTMLDivElement>(null);
 	const afterPane = useRef<HTMLDivElement>(null);
 	const syncing = useRef(false);
@@ -98,8 +90,6 @@ export default function PreviewCompare({ title, before, after, onClose }: Previe
 			if (!canvas) return;
 
 			const pdfPage = await doc.getPage(page);
-			// Cap the backing store so a 1920x1080pt slide at 4x does not allocate
-			// hundreds of megabytes of canvas.
 			const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
 			const viewport = pdfPage.getViewport({ scale: scale * dpr });
 			const context = canvas.getContext("2d");
@@ -155,8 +145,6 @@ export default function PreviewCompare({ title, before, after, onClose }: Previe
 		syncing.current = true;
 		target.scrollLeft = source.scrollLeft;
 		target.scrollTop = source.scrollTop;
-		// Released on the next frame: assigning scroll positions fires scroll
-		// events that would otherwise bounce back and forth.
 		requestAnimationFrame(() => {
 			syncing.current = false;
 		});
@@ -168,17 +156,19 @@ export default function PreviewCompare({ title, before, after, onClose }: Previe
 	);
 
 	return (
-		<div className="fixed inset-0 z-50 flex flex-col bg-ink-50">
-			<header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-ink-200 bg-white px-4 py-3">
-				<h2 className="min-w-0 flex-1 truncate text-sm text-ink-900">{title}</h2>
+		<div className="fixed inset-0 z-50 flex flex-col bg-[var(--color-desk)]">
+			<header className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-3.5 sm:px-6">
+				<h2 className="min-w-0 flex-1 truncate text-[0.9375rem] text-[var(--color-ink)]">
+					{title}
+				</h2>
 
-				<label className="flex items-center gap-2 text-xs text-ink-500">
-					Página
+				<label className="flex items-center gap-2 text-xs text-[var(--color-mute)]">
+					<span className="label">Página</span>
 					<select
 						value={pageNumber}
 						disabled={!docs}
 						onChange={(event) => setPageNumber(Number(event.target.value))}
-						className="num border border-ink-300 bg-white px-2 py-1 text-xs text-ink-900"
+						className="num border border-[var(--color-rule)] bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-ink)]"
 					>
 						{pageOptions.map((page) => (
 							<option key={page} value={page}>
@@ -186,53 +176,51 @@ export default function PreviewCompare({ title, before, after, onClose }: Previe
 							</option>
 						))}
 					</select>
-					{docs && <span className="num text-ink-400">de {docs.pageCount}</span>}
+					{docs && <span className="num text-[var(--color-faint)]">/ {docs.pageCount}</span>}
 				</label>
 
-				<div className="flex items-center gap-2 text-xs text-ink-500">
-					Zoom
+				<div className="flex items-center gap-2 text-xs text-[var(--color-mute)]">
+					<span className="label">Zoom</span>
 					<button
 						type="button"
 						onClick={() => setZoomIndex((index) => Math.max(0, index - 1))}
 						disabled={zoomIndex === 0}
-						className="border border-ink-300 px-2 py-1 text-ink-900 disabled:opacity-40"
+						className="btn-ghost !px-2 !py-1 disabled:opacity-30"
 						aria-label="Alejar"
 					>
-						&minus;
+						−
 					</button>
-					<span className="num w-12 text-center text-ink-900">
-						{Math.round(zoom * 100)}%
+					<span className="num w-10 text-center text-[var(--color-ink)]">
+						{Math.round(zoom * 100)}
 					</span>
 					<button
 						type="button"
 						onClick={() => setZoomIndex((index) => Math.min(ZOOM_STEPS.length - 1, index + 1))}
 						disabled={zoomIndex === ZOOM_STEPS.length - 1}
-						className="border border-ink-300 px-2 py-1 text-ink-900 disabled:opacity-40"
+						className="btn-ghost !px-2 !py-1 disabled:opacity-30"
 						aria-label="Acercar"
 					>
 						+
 					</button>
 				</div>
 
-				<button
-					type="button"
-					onClick={onClose}
-					className="border border-ink-800 px-3 py-1 text-xs text-ink-900 hover:bg-ink-100"
-				>
+				<button type="button" onClick={onClose} className="btn-ghost">
 					Cerrar
 				</button>
 			</header>
 
 			{error && (
-				<p className="border-b border-ink-200 bg-white px-4 py-2 text-xs text-ink-700">{error}</p>
+				<p className="border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-2 text-xs text-[var(--color-accent)] sm:px-6">
+					{error}
+				</p>
 			)}
 			{!docs && !error && (
-				<p className="border-b border-ink-200 bg-white px-4 py-2 text-xs text-ink-500">
-					Abriendo ambas versiones…
+				<p className="border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-5 py-2 text-xs text-[var(--color-mute)] sm:px-6">
+					Abriendo…
 				</p>
 			)}
 
-			<div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-ink-200 md:grid-cols-2">
+			<div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-[var(--color-rule)] md:grid-cols-2">
 				<Pane
 					ref={beforePane}
 					label="Antes"
@@ -262,13 +250,16 @@ interface PaneProps {
 
 function Pane({ ref, label, weight, canvasRef, onScroll }: PaneProps) {
 	return (
-		<section className="flex min-h-0 min-w-0 flex-col bg-ink-100">
-			<div className="flex items-baseline justify-between border-b border-ink-200 bg-white px-3 py-1.5">
-				<span className="text-xs text-ink-700">{label}</span>
-				<span className="num text-xs text-ink-500">{weight}</span>
+		<section className="flex min-h-0 min-w-0 flex-col bg-[var(--color-paper)]">
+			<div className="flex items-baseline justify-between border-b border-[var(--color-rule)] bg-[var(--color-surface)] px-4 py-2.5">
+				<span className="label">{label}</span>
+				<span className="num text-xs text-[var(--color-mute)]">{weight}</span>
 			</div>
-			<div ref={ref} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto p-4">
-				<canvas ref={canvasRef} className="block border border-ink-200 bg-white" />
+			<div ref={ref} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto p-6 sm:p-8">
+				<canvas
+					ref={canvasRef}
+					className="block border border-[var(--color-rule)] bg-[var(--color-surface)] shadow-[0_8px_30px_rgb(29_29_31_/_0.06)]"
+				/>
 			</div>
 		</section>
 	);

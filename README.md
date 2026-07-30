@@ -1,4 +1,4 @@
-# pdf-shrink
+# PDF Wohl
 
 Reduce el peso de presentaciones exportadas a PDF que pesan demasiado por
 imágenes sobredimensionadas. Todo ocurre en el navegador: no hay backend, no hay
@@ -114,7 +114,7 @@ viva: cada pixmap y cada canvas se libera antes de pasar al objeto siguiente.
 
 | Preset          | ppi | calidad JPEG |
 | --------------- | --- | ------------ |
-| Máxima calidad  | 200 | 85           |
+| Máxima          | 200 | 85           |
 | Equilibrado     | 150 | 78           |
 | Liviano         | 110 | 68           |
 

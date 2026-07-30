@@ -5,6 +5,8 @@ import { useCallback, useId, useRef, useState } from "react";
 interface DropzoneProps {
 	onFiles: (files: File[]) => void;
 	disabled: boolean;
+	/** Sit inside a chassis without doubling the outer border. */
+	flush?: boolean;
 }
 
 function pdfsOnly(list: FileList | null): File[] {
@@ -14,12 +16,11 @@ function pdfsOnly(list: FileList | null): File[] {
 	);
 }
 
-export default function Dropzone({ onFiles, disabled }: DropzoneProps) {
+export default function Dropzone({ onFiles, disabled, flush = false }: DropzoneProps) {
 	const [dragging, setDragging] = useState(false);
 	const [rejected, setRejected] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const inputId = useId();
-	// dragenter/dragleave fire for descendants too; a counter avoids flicker.
 	const depth = useRef(0);
 
 	const accept = useCallback(
@@ -59,23 +60,43 @@ export default function Dropzone({ onFiles, disabled }: DropzoneProps) {
 					accept(event.dataTransfer.files);
 				}}
 				className={[
-					"border border-dashed px-6 py-10 text-center transition-colors",
-					dragging ? "border-ink-800 bg-ink-100" : "border-ink-300 bg-white",
-					disabled ? "opacity-60" : "",
+					"px-6 py-16 text-center transition-colors duration-150 sm:py-20",
+					flush ? "" : "border border-[var(--color-rule)]",
+					dragging ? "bg-[var(--color-paper)]" : "bg-[var(--color-surface)]",
+					disabled ? "opacity-50" : "cursor-pointer",
 				].join(" ")}
+				onClick={() => {
+					if (!disabled) inputRef.current?.click();
+				}}
+				onKeyDown={(event) => {
+					if (disabled) return;
+					if (event.key === "Enter" || event.key === " ") {
+						event.preventDefault();
+						inputRef.current?.click();
+					}
+				}}
+				role="button"
+				tabIndex={disabled ? -1 : 0}
+				aria-disabled={disabled}
+				aria-label="Elegir archivos PDF"
 			>
-				<p className="text-sm text-ink-700">
-					Arrastrá archivos PDF acá, o{" "}
+				<p
+					className={[
+						"text-[1.0625rem]",
+						dragging ? "text-[var(--color-accent)]" : "text-[var(--color-ink)]",
+					].join(" ")}
+				>
+					{dragging ? "Soltá para agregar" : "Arrastrá un PDF"}
+				</p>
+				<p className="mt-2 text-sm text-[var(--color-mute)]">
+					o{" "}
 					<label
 						htmlFor={inputId}
-						className="cursor-pointer underline decoration-ink-400 underline-offset-2 hover:decoration-ink-800"
+						className="cursor-pointer text-[var(--color-ink)] underline decoration-[var(--color-rule)] underline-offset-4 hover:decoration-[var(--color-ink)]"
+						onClick={(event) => event.stopPropagation()}
 					>
-						elegilos del disco
+						elegí del disco
 					</label>
-					.
-				</p>
-				<p className="mt-2 text-xs text-ink-400">
-					Se procesan de a uno, en orden. El archivo nunca sale de tu navegador.
 				</p>
 				<input
 					id={inputId}
@@ -87,14 +108,13 @@ export default function Dropzone({ onFiles, disabled }: DropzoneProps) {
 					className="sr-only"
 					onChange={(event) => {
 						accept(event.target.files);
-						// Allow re-selecting the same file after removing it from the queue.
 						event.target.value = "";
 					}}
 				/>
 			</div>
 			{rejected > 0 && (
-				<p className="mt-2 text-xs text-ink-500">
-					<span className="num">{rejected}</span> archivo(s) ignorado(s): sólo se aceptan PDF.
+				<p className="border-t border-[var(--color-rule)] px-5 py-3 text-xs text-[var(--color-mute)]">
+					<span className="num text-[var(--color-ink)]">{rejected}</span> ignorado(s): sólo PDF.
 				</p>
 			)}
 		</div>
